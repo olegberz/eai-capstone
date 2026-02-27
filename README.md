@@ -16,8 +16,10 @@ The primary goal of these labs is to provide hands-on experience with:
 
 | Session | Topic | Description | Due Date | Link |
 |:-------:|:------|:------------|:---------|:-----|
-| **2** | **Data Integration & Schema Transformation** | Transform different order formats (Web, Mobile, B2B) into a canonical schema using Node-RED. | **February 27th** | [Go to Lab](./practice-01-starter) |
 | **1** | **EIP Routing** | Implement Splitter, Content-Based Router, and Aggregator patterns using RabbitMQ and Python. | 17 February 2026 | [Go to Lab](./session-3-routing-lab) |
+| **2** | **Data Integration & Schema Transformation** | Transform different order formats (Web, Mobile, B2B) into a canonical schema using Node-RED. | **February 27th** | [Go to Lab](./practice-01-starter) |
+| **3** | **Event-Driven Messaging with RabbitMQ** | Implement publish-subscribe messaging with retries, DLQ handling, correlation IDs, and idempotent consumers using RabbitMQ and Node.js. | **08.03.2026, 20:00 EET (Europe/Riga, UTC+2)** | [Go to Lab](./practice-02-events) |
+
 
 > *More labs will be added as the course progresses.*
 
