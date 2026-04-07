@@ -1,3 +1,18 @@
+const express = require('express');
+const { v4: uuidv4 } = require('uuid');
+
+const app = express();
+app.use(express.json());
+
+const PORT = process.env.PORT || 3003;
+const INVENTORY_FAIL_MODE = process.env.INVENTORY_FAIL_MODE || 'never';
+
+const callLog = [];
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', service: 'inventory-service' });
+});
+
 app.post('/inventory/reserve', (req, res) => {
   const correlationId = req.body.correlationId || req.headers['x-correlation-id'];
   const orderId = req.body.orderId;
@@ -22,4 +37,18 @@ app.post('/inventory/release', (req, res) => {
   callLog.push({ endpoint: '/inventory/release', correlationId, orderId, timestamp: new Date().toISOString() });
 
   res.json({ status: 'released', correlationId });
+});
+
+app.get('/admin/logs', (req, res) => {
+  res.json(callLog);
+});
+
+app.post('/admin/reset', (req, res) => {
+  callLog.length = 0;
+  console.log('[inventory-service] Call log cleared');
+  res.json({ status: 'ok', message: 'Call log cleared' });
+});
+
+app.listen(PORT, () => {
+  console.log(`[inventory-service] Running on port ${PORT} | INVENTORY_FAIL_MODE=${INVENTORY_FAIL_MODE}`);
 });
