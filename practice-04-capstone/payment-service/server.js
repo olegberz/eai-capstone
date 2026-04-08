@@ -4,41 +4,51 @@ const { v4: uuidv4 } = require('uuid');
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3002;
+const PAYMENT_FAIL_MODE = process.env.PAYMENT_FAIL_MODE || 'never';
 
-const NODERED_URL = process.env.NODERED_URL;
-const PAYMENT_URL = process.env.PAYMENT_URL;
-const INVENTORY_URL = process.env.INVENTORY_URL;
-const NOTIFICATION_URL = process.env.NOTIFICATION_URL;
-
-const orders = new Map();
+const callLog = [];
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'order-service' });
+  res.json({ status: 'ok', service: 'payment-service' });
 });
 
-app.post('/orders', (req, res) => {
-  const orderId = 'ord-' + uuidv4().slice(0, 8);
-  const correlationId = uuidv4();
-  const order = {
-    orderId,
-    correlationId,
-    ...req.body,
-    receivedAt: new Date().toISOString(),
-    status: 'received'
-  };
-  orders.set(orderId, order);
-  res.status(201).json({ orderId, correlationId, status: 'received' });
-});
+app.post('/payment/authorize', (req, res) => {
+  const correlationId = req.body.correlationId || req.headers['x-correlation-id'];
+  const orderId = req.body.orderId;
 
-app.get('/orders/:id', (req, res) => {
-  const order = orders.get(req.params.id);
-  if (!order) {
-    return res.status(404).json({ error: 'Order not found' });
+  callLog.push({ endpoint: '/payment/authorize', correlationId, orderId, timestamp: new Date().toISOString() });
+
+  let shouldFail = false;
+  if (PAYMENT_FAIL_MODE === 'always') shouldFail = true;
+  if (PAYMENT_FAIL_MODE === 'random' && Math.random() < 0.1) shouldFail = true;
+
+  if (shouldFail) {
+    return res.status(422).json({ status: 'rejected', reason: 'Payment declined', correlationId });
   }
-  res.json(order);
+
+  res.json({ status: 'authorized', transactionId: uuidv4(), correlationId });
+});
+
+app.post('/payment/refund', (req, res) => {
+  const correlationId = req.body.correlationId || req.headers['x-correlation-id'];
+  const orderId = req.body.orderId;
+
+  callLog.push({ endpoint: '/payment/refund', correlationId, orderId, timestamp: new Date().toISOString() });
+
+  res.json({ status: 'refunded', correlationId });
+});
+
+app.get('/admin/logs', (req, res) => {
+  res.json(callLog);
+});
+
+app.post('/admin/reset', (req, res) => {
+  callLog.length = 0;
+  console.log('[payment-service] Call log cleared');
+  res.json({ status: 'ok', message: 'Call log cleared' });
 });
 
 app.listen(PORT, () => {
-  console.log(`[order-service] Running on port ${PORT}`);
+  console.log(`[payment-service] Running on port ${PORT} | PAYMENT_FAIL_MODE=${PAYMENT_FAIL_MODE}`);
 });

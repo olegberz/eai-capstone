@@ -4,7 +4,7 @@
     "type": "tab",
     "label": "Example",
     "disabled": false,
-    "info": "Hello-world reference flow. You can delete this tab when you are done."
+    "info": ""
   },
   {
     "id": "example-http-in",
@@ -45,160 +45,389 @@
     "y": 80,
     "wires": []
   },
+
   {
     "id": "tab-orchestration",
     "type": "tab",
     "label": "Orchestration",
     "disabled": false,
-    "info": "Main business process flow.\nBuild the happy path here: order intake → routing → payment → inventory → notification → response.\nAlso wire in the error paths that lead to the Error Handling tab."
+    "info": ""
   },
+
   {
     "id": "orch-intake",
     "type": "http in",
     "z": "tab-orchestration",
-    "name": "TODO: Define your entry point\n(e.g. POST /order or POST /checkout)",
+    "name": "POST /order",
     "url": "/order",
     "method": "post",
     "upload": false,
     "swaggerDoc": "",
-    "x": 160,
+    "x": 120,
     "y": 80,
-    "wires": [["orch-router"]]
+    "wires": [["orch-translator"]]
   },
+
   {
-    "id": "orch-router",
+    "id": "orch-translator",
     "type": "function",
     "z": "tab-orchestration",
-    "name": "TODO: Content-Based Router\nRoute by orderType (standard / express / b2b)\nUse a switch node or routing logic here.\nDo NOT implement all logic in a single function node.",
-    "func": "// TODO: implement Content-Based Router\n// Read msg.payload.orderType and route accordingly\n// Consider using a separate switch node instead of this function node\nnode.error('Content-Based Router not implemented');\nreturn null;",
+    "name": "Message Translator (Canonical Schema)",
+    "func": "// EIP: Message Translator\n// Converts web / mobile / b2b formats into canonical schema\nconst body = msg.payload;\nconst contentType = (msg.req && msg.req.headers && msg.req.headers['content-type']) || '';\n\nlet canonical;\n\nif (contentType.includes('xml') || (typeof body === 'string' && body.trim().startsWith('<'))) {\n  // B2B XML — simple extraction\n  const getString = (tag) => {\n    const m = String(body).match(new RegExp('<' + tag + '>([^<]+)</' + tag + '>'));\n    return m ? m[1] : null;\n  };\n  canonical = {\n    customerId: getString('customerId') || getString('customer_id'),\n    orderType: getString('orderType') || 'b2b',\n    currency: getString('currency') || 'USD',\n    items: [{ productId: getString('productId') || 'UNKNOWN', quantity: parseInt(getString('quantity') || '1') }]\n  };\n} else if (body.cust_id || body.itms) {\n  // Mobile format\n  canonical = {\n    customerId: body.cust_id,\n    orderType: body.ord_type || 'standard',\n    currency: body.curr || 'USD',\n    items: body.itms || []\n  };\n} else {\n  // Web format — already canonical\n  canonical = body;\n}\n\nmsg.canonical = canonical;\nreturn msg;",
     "outputs": 1,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 420,
+    "x": 340,
     "y": 80,
-    "wires": [[]]
+    "wires": [["orch-correlationid"]]
   },
+
+  {
+    "id": "orch-correlationid",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Correlation Identifier",
+    "func": "// EIP: Correlation Identifier\n// Generate one correlationId for the entire order lifecycle\nfunction uuidv4() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {\n    var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\n\nconst correlationId = uuidv4();\nmsg.correlationId = correlationId;\nmsg.trace = [];\nmsg.stepStart = Date.now();\n\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 580,
+    "y": 80,
+    "wires": [["orch-router"]]
+  },
+
+  {
+    "id": "orch-router",
+    "type": "switch",
+    "z": "tab-orchestration",
+    "name": "Content-Based Router (orderType)",
+    "property": "canonical.orderType",
+    "propertyType": "msg",
+    "rules": [
+      { "t": "eq", "v": "b2b", "vt": "str" },
+      { "t": "else" }
+    ],
+    "checkall": "false",
+    "repair": false,
+    "outputs": 2,
+    "x": 820,
+    "y": 80,
+    "wires": [["orch-call-order"], ["orch-call-order"]]
+  },
+
+  {
+    "id": "orch-call-order",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Prepare Order Service call",
+    "func": "msg.headers = {\n  'Content-Type': 'application/json',\n  'x-correlation-id': msg.correlationId\n};\nmsg.payload = {\n  ...msg.canonical,\n  correlationId: msg.correlationId\n};\nmsg.stepStart = Date.now();\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1060,
+    "y": 80,
+    "wires": [["orch-order-request"]]
+  },
+
+  {
+    "id": "orch-order-request",
+    "type": "http request",
+    "z": "tab-orchestration",
+    "name": "POST order-service/orders",
+    "method": "POST",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "http://order-service:3001/orders",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "authType": "",
+    "x": 1060,
+    "y": 160,
+    "wires": [["orch-prepare-payment"]]
+  },
+
+  {
+    "id": "orch-prepare-payment",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Prepare Payment call",
+    "func": "msg.orderId = msg.payload.orderId;\nmsg.stepStart = Date.now();\nmsg.headers = {\n  'Content-Type': 'application/json',\n  'x-correlation-id': msg.correlationId\n};\nmsg.payload = {\n  orderId: msg.orderId,\n  correlationId: msg.correlationId,\n  amount: msg.canonical ? msg.canonical.total : 0\n};\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1060,
+    "y": 240,
+    "wires": [["orch-payment"]]
+  },
+
   {
     "id": "orch-payment",
     "type": "http request",
     "z": "tab-orchestration",
-    "name": "TODO: Call Payment Service\nPOST /payment/authorize\nInclude correlationId in header and body",
+    "name": "POST payment/authorize",
     "method": "POST",
     "ret": "obj",
     "paytoqs": "ignore",
-    "url": "",
+    "url": "http://payment-service:3002/payment/authorize",
     "tls": "",
     "persist": false,
     "proxy": "",
     "authType": "",
-    "x": 420,
-    "y": 200,
-    "wires": [[]]
+    "x": 1060,
+    "y": 320,
+    "wires": [["orch-check-payment"]]
   },
+
+  {
+    "id": "orch-check-payment",
+    "type": "switch",
+    "z": "tab-orchestration",
+    "name": "Payment authorized?",
+    "property": "payload.status",
+    "propertyType": "msg",
+    "rules": [
+      { "t": "eq", "v": "authorized", "vt": "str" },
+      { "t": "else" }
+    ],
+    "checkall": "false",
+    "repair": false,
+    "outputs": 2,
+    "x": 1060,
+    "y": 400,
+    "wires": [["orch-payment-ok"], ["orch-payment-failed"]]
+  },
+
+  {
+    "id": "orch-payment-ok",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Save payment result",
+    "func": "msg.transactionId = msg.payload.transactionId;\nmsg.trace.push({ step: 'payment', status: 'success', durationMs: Date.now() - msg.stepStart });\nmsg.stepStart = Date.now();\nmsg.headers = {\n  'Content-Type': 'application/json',\n  'x-correlation-id': msg.correlationId\n};\nmsg.payload = {\n  orderId: msg.orderId,\n  correlationId: msg.correlationId,\n  items: msg.canonical ? msg.canonical.items : []\n};\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1060,
+    "y": 480,
+    "wires": [["orch-inventory"]]
+  },
+
+  {
+    "id": "orch-payment-failed",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Build failed response",
+    "func": "msg.trace.push({ step: 'payment', status: 'rejected', durationMs: Date.now() - msg.stepStart });\nmsg.payload = {\n  orderId: msg.orderId,\n  correlationId: msg.correlationId,\n  status: 'failed',\n  trace: msg.trace\n};\nmsg.statusCode = 200;\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 800,
+    "y": 400,
+    "wires": [["orch-response"]]
+  },
+
   {
     "id": "orch-inventory",
     "type": "http request",
     "z": "tab-orchestration",
-    "name": "TODO: Call Inventory Service\nPOST /inventory/reserve\nOnly call if payment succeeded",
+    "name": "POST inventory/reserve",
     "method": "POST",
     "ret": "obj",
     "paytoqs": "ignore",
-    "url": "",
+    "url": "http://inventory-service:3003/inventory/reserve",
     "tls": "",
     "persist": false,
     "proxy": "",
     "authType": "",
-    "x": 420,
-    "y": 320,
-    "wires": [[]]
+    "x": 1060,
+    "y": 560,
+    "wires": [["orch-check-inventory"]]
   },
+
+  {
+    "id": "orch-check-inventory",
+    "type": "switch",
+    "z": "tab-orchestration",
+    "name": "Inventory reserved?",
+    "property": "payload.status",
+    "propertyType": "msg",
+    "rules": [
+      { "t": "eq", "v": "reserved", "vt": "str" },
+      { "t": "else" }
+    ],
+    "checkall": "false",
+    "repair": false,
+    "outputs": 2,
+    "x": 1060,
+    "y": 640,
+    "wires": [["orch-inventory-ok"], ["orch-inventory-failed"]]
+  },
+
+  {
+    "id": "orch-inventory-ok",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Save inventory result",
+    "func": "msg.reservationId = msg.payload.reservationId;\nmsg.trace.push({ step: 'inventory', status: 'success', durationMs: Date.now() - msg.stepStart });\nmsg.stepStart = Date.now();\nmsg.headers = {\n  'Content-Type': 'application/json',\n  'x-correlation-id': msg.correlationId\n};\nmsg.payload = {\n  orderId: msg.orderId,\n  correlationId: msg.correlationId,\n  type: 'order_confirmed',\n  message: 'Your order has been confirmed'\n};\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1060,
+    "y": 720,
+    "wires": [["orch-notification"]]
+  },
+
+  {
+    "id": "orch-inventory-failed",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Inventory failed — start compensation",
+    "func": "msg.trace.push({ step: 'inventory', status: 'unavailable', durationMs: Date.now() - msg.stepStart });\nmsg.stepStart = Date.now();\n// prepare refund call\nmsg.headers = {\n  'Content-Type': 'application/json',\n  'x-correlation-id': msg.correlationId\n};\nmsg.payload = {\n  orderId: msg.orderId,\n  correlationId: msg.correlationId,\n  transactionId: msg.transactionId\n};\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 800,
+    "y": 640,
+    "wires": [["comp-refund-payment"]]
+  },
+
   {
     "id": "orch-notification",
     "type": "http request",
     "z": "tab-orchestration",
-    "name": "TODO: Call Notification Service\nPOST /notification/send\nOnly call if inventory reserved",
+    "name": "POST notification/send",
     "method": "POST",
     "ret": "obj",
     "paytoqs": "ignore",
-    "url": "",
+    "url": "http://notification-service:3004/notification/send",
     "tls": "",
     "persist": false,
     "proxy": "",
     "authType": "",
-    "x": 420,
-    "y": 440,
-    "wires": [[]]
+    "x": 1060,
+    "y": 800,
+    "wires": [["orch-build-success"]]
   },
+
+  {
+    "id": "orch-build-success",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Build success response",
+    "func": "msg.trace.push({ step: 'notification', status: 'success', durationMs: Date.now() - msg.stepStart });\nmsg.payload = {\n  orderId: msg.orderId,\n  correlationId: msg.correlationId,\n  status: 'completed',\n  trace: msg.trace\n};\nmsg.statusCode = 200;\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1060,
+    "y": 880,
+    "wires": [["orch-response"]]
+  },
+
   {
     "id": "orch-response",
     "type": "http response",
     "z": "tab-orchestration",
-    "name": "TODO: Return orchestration result\nInclude { orderId, correlationId, status, trace: [...] }",
+    "name": "HTTP Response",
     "statusCode": "",
     "headers": { "content-type": "application/json" },
-    "x": 700,
-    "y": 440,
+    "x": 800,
+    "y": 880,
     "wires": []
   },
+
   {
     "id": "tab-error-handling",
     "type": "tab",
     "label": "Error Handling",
     "disabled": false,
-    "info": "Compensation and error flows.\nWire these nodes into the Orchestration tab when a step fails.\nCompensation must run in REVERSE ORDER of the steps that succeeded."
+    "info": ""
   },
+
   {
-    "id": "eh-release-inventory",
-    "type": "function",
+    "id": "comp-refund-payment",
+    "type": "http request",
     "z": "tab-error-handling",
-    "name": "TODO: Compensation Step 1\nRelease Inventory\nPOST /inventory/release\nRun this FIRST if shipping/notification failed after inventory reserved",
-    "func": "// TODO: call inventory-service POST /inventory/release\n// Include orderId, correlationId, reservationId in the request body\n// After successful release, pass to Compensation Step 2 (refund)\nnode.error('Inventory release not implemented');\nreturn null;",
-    "outputs": 1,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 220,
+    "name": "POST payment/refund (compensation)",
+    "method": "POST",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "http://payment-service:3002/payment/refund",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "authType": "",
+    "x": 240,
     "y": 120,
-    "wires": [[]]
+    "wires": [["comp-build-compensated"]]
   },
+
   {
-    "id": "eh-refund-payment",
+    "id": "comp-build-compensated",
     "type": "function",
     "z": "tab-error-handling",
-    "name": "TODO: Compensation Step 2\nRefund Payment\nPOST /payment/refund\nRun this SECOND (after inventory released, or if inventory failed)",
-    "func": "// TODO: call payment-service POST /payment/refund\n// Include orderId, correlationId, transactionId in the request body\n// After successful refund, build the 'compensated' response\nnode.error('Payment refund not implemented');\nreturn null;",
+    "name": "Build compensated response",
+    "func": "msg.trace.push({ step: 'compensation:payment-refund', status: 'success', durationMs: Date.now() - msg.stepStart });\nmsg.payload = {\n  orderId: msg.orderId,\n  correlationId: msg.correlationId,\n  status: 'compensated',\n  trace: msg.trace\n};\nmsg.statusCode = 200;\nreturn msg;",
     "outputs": 1,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 220,
-    "y": 240,
-    "wires": [[]]
+    "x": 500,
+    "y": 120,
+    "wires": [["comp-response"]]
   },
+
+  {
+    "id": "comp-response",
+    "type": "http response",
+    "z": "tab-error-handling",
+    "name": "HTTP Response",
+    "statusCode": "",
+    "headers": { "content-type": "application/json" },
+    "x": 720,
+    "y": 120,
+    "wires": []
+  },
+
   {
     "id": "eh-dlq",
     "type": "function",
     "z": "tab-error-handling",
-    "name": "TODO: Dead Letter Channel\nHandle unrecoverable failures\n(e.g. compensation itself fails, or max retries exceeded)",
-    "func": "// TODO: implement Dead Letter Channel handling\n// Options:\n//   - Log the failed message to a file\n//   - Publish to a RabbitMQ DLQ (bonus)\n//   - Store in a dead-letter in-memory queue with admin GET endpoint\n// The message here is permanently unprocessable — log it for manual review\nnode.warn('Dead letter: ' + JSON.stringify(msg.payload));\nreturn msg;",
+    "name": "Dead Letter Channel",
+    "func": "// EIP: Dead Letter Channel\n// Unrecoverable errors land here\nnode.warn('Dead letter: ' + JSON.stringify(msg.payload));\nmsg.payload = {\n  error: 'Unrecoverable failure',\n  correlationId: msg.correlationId || null,\n  original: msg.payload\n};\nreturn msg;",
     "outputs": 1,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 220,
-    "y": 360,
-    "wires": [[]]
+    "x": 240,
+    "y": 260,
+    "wires": [["eh-debug"]]
   },
+
   {
     "id": "eh-debug",
     "type": "debug",
     "z": "tab-error-handling",
-    "name": "TODO: Log dead letter for admin inspection",
+    "name": "Log dead letter",
     "active": true,
     "tosidebar": true,
     "console": true,
@@ -207,17 +436,19 @@
     "targetType": "msg",
     "statusVal": "",
     "statusType": "auto",
-    "x": 500,
-    "y": 360,
+    "x": 460,
+    "y": 260,
     "wires": []
   },
+
   {
     "id": "tab-admin",
     "type": "tab",
     "label": "Admin",
     "disabled": false,
-    "info": "Health check and debugging endpoints.\nThe /health endpoint is already wired and working.\nAdd a /trace/:orderId endpoint to help debug your orchestration flow."
+    "info": ""
   },
+
   {
     "id": "admin-health-in",
     "type": "http in",
@@ -257,17 +488,44 @@
     "y": 80,
     "wires": []
   },
+
   {
     "id": "admin-trace-in",
     "type": "http in",
     "z": "tab-admin",
-    "name": "TODO: GET /trace/:orderId\nReturn saga trace for debugging",
+    "name": "GET /trace/:orderId",
     "url": "/trace/:orderId",
     "method": "get",
     "upload": false,
     "swaggerDoc": "",
     "x": 160,
     "y": 200,
-    "wires": [[]]
+    "wires": [["admin-trace-fn"]]
+  },
+  {
+    "id": "admin-trace-fn",
+    "type": "function",
+    "z": "tab-admin",
+    "name": "Trace response",
+    "func": "msg.payload = { orderId: msg.req.params.orderId, info: 'Check individual service /admin/logs for trace details' };\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 360,
+    "y": 200,
+    "wires": [["admin-trace-out"]]
+  },
+  {
+    "id": "admin-trace-out",
+    "type": "http response",
+    "z": "tab-admin",
+    "name": "HTTP Response",
+    "statusCode": "200",
+    "headers": { "content-type": "application/json" },
+    "x": 540,
+    "y": 200,
+    "wires": []
   }
 ]
